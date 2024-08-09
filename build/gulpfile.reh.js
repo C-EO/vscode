@@ -41,6 +41,7 @@ const REMOTE_FOLDER = path.join(REPO_ROOT, 'remote');
 
 const BUILD_TARGETS = [
 	{ platform: 'win32', arch: 'x64' },
+	{ platform: 'win32', arch: 'arm64' },
 	{ platform: 'darwin', arch: 'x64' },
 	{ platform: 'darwin', arch: 'arm64' },
 	{ platform: 'linux', arch: 'x64' },
@@ -63,6 +64,8 @@ const serverResources = [
 
 	// Terminal shell integration
 	'out-build/vs/workbench/contrib/terminal/browser/media/shellIntegration.ps1',
+	'out-build/vs/workbench/contrib/terminal/browser/media/CodeTabExpansion.psm1',
+	'out-build/vs/workbench/contrib/terminal/browser/media/GitTabExpansion.psm1',
 	'out-build/vs/workbench/contrib/terminal/browser/media/shellIntegration-bash.sh',
 	'out-build/vs/workbench/contrib/terminal/browser/media/shellIntegration-env.zsh',
 	'out-build/vs/workbench/contrib/terminal/browser/media/shellIntegration-profile.zsh',
