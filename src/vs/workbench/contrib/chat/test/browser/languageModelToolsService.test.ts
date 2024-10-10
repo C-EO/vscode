@@ -10,7 +10,10 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { ContextKeyService } from '../../../../../platform/contextkey/browser/contextKeyService.js';
 import { ContextKeyEqualsExpr, IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { TestExtensionService } from '../../../../test/common/workbenchTestServices.js';
-import { IToolData, IToolImpl, IToolInvocation, LanguageModelToolsService } from '../../common/languageModelToolsService.js';
+import { IToolData, IToolImpl, IToolInvocation } from '../../common/languageModelToolsService.js';
+import { MockChatService } from '../common/mockChatService.js';
+import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
+import { LanguageModelToolsService } from '../../browser/languageModelToolsService.js';
 
 suite('LanguageModelToolsService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -21,7 +24,7 @@ suite('LanguageModelToolsService', () => {
 	setup(() => {
 		const extensionService = new TestExtensionService();
 		contextKeyService = store.add(new ContextKeyService(new TestConfigurationService()));
-		service = store.add(new LanguageModelToolsService(extensionService, contextKeyService));
+		service = store.add(new LanguageModelToolsService(extensionService, contextKeyService, new MockChatService(), new TestDialogService()));
 	});
 
 	test('registerToolData', () => {
@@ -47,7 +50,7 @@ suite('LanguageModelToolsService', () => {
 		store.add(service.registerToolData(toolData));
 
 		const toolImpl: IToolImpl = {
-			invoke: async () => ({ 'text/plain': 'result' })
+			invoke: async () => ({ 'text/plain': 'result' }),
 		};
 
 		store.add(service.registerToolImplementation('testTool', toolImpl));
@@ -113,7 +116,7 @@ suite('LanguageModelToolsService', () => {
 			parameters: {
 				a: 1
 			},
-			context: { sessionId: 'a' },
+			context: undefined,
 			requestedContentTypes: ['text/plain']
 		};
 

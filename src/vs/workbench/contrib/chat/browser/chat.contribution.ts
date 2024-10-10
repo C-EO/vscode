@@ -3,10 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { timeout } from '../../../../base/common/async.js';
 import { MarkdownString, isMarkdownString } from '../../../../base/common/htmlContent.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
+import { registerEditorFeature } from '../../../../editor/common/editorFeatures.js';
 import * as nls from '../../../../nls.js';
 import { AccessibleViewRegistry } from '../../../../platform/accessibility/browser/accessibleViewRegistry.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -18,7 +20,24 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
-import { ChatAccessibilityHelp } from './actions/chatAccessibilityHelp.js';
+import { IEditorResolverService, RegisteredEditorPriority } from '../../../services/editor/common/editorResolverService.js';
+import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
+import { ChatAgentLocation, ChatAgentNameService, ChatAgentService, IChatAgentNameService, IChatAgentService } from '../common/chatAgents.js';
+import { CodeMapperService, ICodeMapperService } from '../common/chatCodeMapperService.js';
+import '../common/chatColors.js';
+import { IChatEditingService } from '../common/chatEditingService.js';
+import { chatVariableLeader } from '../common/chatParserTypes.js';
+import { IChatService } from '../common/chatService.js';
+import { ChatService } from '../common/chatServiceImpl.js';
+import { ChatSlashCommandService, IChatSlashCommandService } from '../common/chatSlashCommands.js';
+import { IChatVariablesService } from '../common/chatVariables.js';
+import { ChatWidgetHistoryService, IChatWidgetHistoryService } from '../common/chatWidgetHistoryService.js';
+import { ILanguageModelsService, LanguageModelsService } from '../common/languageModels.js';
+import { ILanguageModelStatsService, LanguageModelStatsService } from '../common/languageModelStats.js';
+import { ILanguageModelToolsService } from '../common/languageModelToolsService.js';
+import { LanguageModelToolsExtensionPointHandler } from '../common/tools/languageModelToolsContribution.js';
+import { IVoiceChatService, VoiceChatService } from '../common/voiceChatService.js';
+import { PanelChatAccessibilityHelp, QuickChatAccessibilityHelp } from './actions/chatAccessibilityHelp.js';
 import { ChatCommandCenterRendering, registerChatActions } from './actions/chatActions.js';
 import { ACTION_ID_NEW_CHAT, registerNewChatActions } from './actions/chatClearActions.js';
 import { registerChatCodeBlockActions, registerChatCodeCompareBlockActions } from './actions/chatCodeblockActions.js';
@@ -33,38 +52,29 @@ import { registerQuickChatActions } from './actions/chatQuickInputActions.js';
 import { registerChatTitleActions } from './actions/chatTitleActions.js';
 import { IChatAccessibilityService, IChatCodeBlockContextProviderService, IChatWidgetService, IQuickChatService } from './chat.js';
 import { ChatAccessibilityService } from './chatAccessibilityService.js';
+import { ChatMarkdownAnchorService, IChatMarkdownAnchorService } from './chatContentParts/chatMarkdownAnchorService.js';
+import { ChatEditingService } from './chatEditingService.js';
 import { ChatEditor, IChatEditorOptions } from './chatEditor.js';
 import { ChatEditorInput, ChatEditorInputSerializer } from './chatEditorInput.js';
+import { ChatGettingStartedContribution } from './chatGettingStarted.js';
 import { agentSlashCommandToMarkdown, agentToMarkdown } from './chatMarkdownDecorationsRenderer.js';
 import { ChatCompatibilityNotifier, ChatExtensionPointHandler } from './chatParticipantContributions.js';
+import { ChatPasteProvidersFeature } from './chatPasteProviders.js';
 import { QuickChatService } from './chatQuick.js';
 import { ChatResponseAccessibleView } from './chatResponseAccessibleView.js';
 import { ChatVariablesService } from './chatVariables.js';
 import { ChatWidgetService } from './chatWidget.js';
 import { ChatCodeBlockContextProviderService } from './codeBlockContextProviderService.js';
-import './contrib/chatContextAttachments.js';
+import './chatAttachmentModel.js';
 import './contrib/chatInputCompletions.js';
 import './contrib/chatInputEditorContrib.js';
 import './contrib/chatInputEditorHover.js';
-import { ChatAgentLocation, ChatAgentNameService, ChatAgentService, IChatAgentNameService, IChatAgentService } from '../common/chatAgents.js';
-import { chatVariableLeader } from '../common/chatParserTypes.js';
-import { IChatService } from '../common/chatService.js';
-import { ChatService } from '../common/chatServiceImpl.js';
-import { ChatSlashCommandService, IChatSlashCommandService } from '../common/chatSlashCommands.js';
-import { IChatVariablesService } from '../common/chatVariables.js';
-import { ChatWidgetHistoryService, IChatWidgetHistoryService } from '../common/chatWidgetHistoryService.js';
-import { ILanguageModelsService, LanguageModelsService } from '../common/languageModels.js';
-import { ILanguageModelStatsService, LanguageModelStatsService } from '../common/languageModelStats.js';
-import { ILanguageModelToolsService, LanguageModelToolsService } from '../common/languageModelToolsService.js';
-import { LanguageModelToolsExtensionPointHandler } from '../common/tools/languageModelToolsContribution.js';
-import { IVoiceChatService, VoiceChatService } from '../common/voiceChatService.js';
-import { IEditorResolverService, RegisteredEditorPriority } from '../../../services/editor/common/editorResolverService.js';
-import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
-import '../common/chatColors.js';
-import { ChatGettingStartedContribution } from './chatGettingStarted.js';
-import { CodeMapperService, ICodeMapperService } from '../common/chatCodeMapperService.js';
-import { IChatEditingService } from '../common/chatEditingService.js';
-import { ChatEditingService } from './chatEditingService.js';
+import { EditorContributionInstantiation, registerEditorContribution } from '../../../../editor/browser/editorExtensions.js';
+import { ChatEditorController } from './chatEditorController.js';
+import { LanguageModelToolsService } from './languageModelToolsService.js';
+import { ChatEditorSaving } from './chatEditorSaving.js';
+import { registerChatEditorActions } from './chatEditorActions.js';
+
 
 // Register configuration
 const configurationRegistry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
@@ -101,13 +111,8 @@ configurationRegistry.registerConfiguration({
 		},
 		'chat.commandCenter.enabled': {
 			type: 'boolean',
+			tags: ['experimental'],
 			markdownDescription: nls.localize('chat.commandCenter.enabled', "Controls whether the command center shows a menu for chat actions (requires {0}).", '`#window.commandCenter#`'),
-			default: true
-		},
-		'chat.experimental.implicitContext': {
-			type: 'boolean',
-			description: nls.localize('chat.experimental.implicitContext', "Controls whether a checkbox is shown to allow the user to determine which implicit context is included with a chat participant's prompt."),
-			deprecated: true,
 			default: false
 		},
 		'chat.experimental.variables.editor': {
@@ -174,7 +179,8 @@ class ChatResolverContribution extends Disposable {
 }
 
 AccessibleViewRegistry.register(new ChatResponseAccessibleView());
-AccessibleViewRegistry.register(new ChatAccessibilityHelp());
+AccessibleViewRegistry.register(new PanelChatAccessibilityHelp());
+AccessibleViewRegistry.register(new QuickChatAccessibilityHelp());
 
 class ChatSlashStaticSlashCommandsContribution extends Disposable {
 
@@ -260,6 +266,11 @@ class ChatSlashStaticSlashCommandsContribution extends Disposable {
 					progress.report({ content: new MarkdownString(defaultAgent.metadata.helpTextPostfix), kind: 'markdownContent' });
 				}
 			}
+
+			// Without this, the response will be done before it renders and so it will not stream. This ensures that if the response starts
+			// rendering during the next 200ms, then it will be streamed. Once it starts streaming, the whole response streams even after
+			// it has received all response data has been received.
+			await timeout(200);
 		}));
 	}
 }
@@ -273,6 +284,8 @@ registerWorkbenchContribution2(LanguageModelToolsExtensionPointHandler.ID, Langu
 registerWorkbenchContribution2(ChatCompatibilityNotifier.ID, ChatCompatibilityNotifier, WorkbenchPhase.Eventually);
 registerWorkbenchContribution2(ChatGettingStartedContribution.ID, ChatGettingStartedContribution, WorkbenchPhase.Eventually);
 registerWorkbenchContribution2(ChatCommandCenterRendering.ID, ChatCommandCenterRendering, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(ChatEditorSaving.ID, ChatEditorSaving, WorkbenchPhase.AfterRestored);
+
 
 registerChatActions();
 registerChatCopyActions();
@@ -287,6 +300,10 @@ registerMoveActions();
 registerNewChatActions();
 registerChatContextActions();
 registerChatDeveloperActions();
+registerChatEditorActions();
+
+registerEditorFeature(ChatPasteProvidersFeature);
+registerEditorContribution(ChatEditorController.ID, ChatEditorController, EditorContributionInstantiation.Eventually);
 
 registerSingleton(IChatService, ChatService, InstantiationType.Delayed);
 registerSingleton(IChatWidgetService, ChatWidgetService, InstantiationType.Delayed);
@@ -304,3 +321,4 @@ registerSingleton(IVoiceChatService, VoiceChatService, InstantiationType.Delayed
 registerSingleton(IChatCodeBlockContextProviderService, ChatCodeBlockContextProviderService, InstantiationType.Delayed);
 registerSingleton(ICodeMapperService, CodeMapperService, InstantiationType.Delayed);
 registerSingleton(IChatEditingService, ChatEditingService, InstantiationType.Delayed);
+registerSingleton(IChatMarkdownAnchorService, ChatMarkdownAnchorService, InstantiationType.Delayed);
