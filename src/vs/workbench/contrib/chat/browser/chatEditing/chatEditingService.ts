@@ -33,7 +33,7 @@ import { MultiDiffEditor } from '../../../multiDiffEditor/browser/multiDiffEdito
 import { MultiDiffEditorInput } from '../../../multiDiffEditor/browser/multiDiffEditorInput.js';
 import { IMultiDiffSourceResolver, IMultiDiffSourceResolverService, IResolvedMultiDiffSource, MultiDiffEditorItem } from '../../../multiDiffEditor/browser/multiDiffSourceResolverService.js';
 import { ICodeMapperResponse, ICodeMapperService } from '../../common/chatCodeMapperService.js';
-import { CONTEXT_CHAT_EDITING_CAN_REDO, CONTEXT_CHAT_EDITING_CAN_UNDO } from '../../common/chatContextKeys.js';
+import { ChatContextKeys } from '../../common/chatContextKeys.js';
 import { applyingChatEditsContextKey, applyingChatEditsFailedContextKey, CHAT_EDITING_MULTI_DIFF_SOURCE_RESOLVER_SCHEME, chatEditingMaxFileAssignmentName, chatEditingResourceContextKey, ChatEditingSessionState, decidedChatEditingResourceContextKey, defaultChatEditingMaxFileLimit, hasAppliedChatEditsContextKey, hasUndecidedChatEditingResourceContextKey, IChatEditingService, IChatEditingSession, IChatEditingSessionStream, inChatEditingSessionContextKey, WorkingSetEntryState } from '../../common/chatEditingService.js';
 import { IChatResponseModel, IChatTextEditGroup } from '../../common/chatModel.js';
 import { IChatService } from '../../common/chatService.js';
@@ -129,13 +129,14 @@ export class ChatEditingService extends Disposable implements IChatEditingServic
 		this._register(bindContextKey(applyingChatEditsContextKey, contextKeyService, (reader) => {
 			return this._currentAutoApplyOperationObs.read(reader) !== null;
 		}));
-		this._register(bindContextKey(CONTEXT_CHAT_EDITING_CAN_UNDO, contextKeyService, (r) => {
+		this._register(bindContextKey(ChatContextKeys.chatEditingCanUndo, contextKeyService, (r) => {
 			return this._currentSessionObs.read(r)?.canUndo.read(r) || false;
 		}));
-		this._register(bindContextKey(CONTEXT_CHAT_EDITING_CAN_REDO, contextKeyService, (r) => {
+		this._register(bindContextKey(ChatContextKeys.chatEditingCanRedo, contextKeyService, (r) => {
 			return this._currentSessionObs.read(r)?.canRedo.read(r) || false;
 		}));
 		this._register(this._chatService.onDidDisposeSession((e) => {
+			this._applyingChatEditsFailedContextKey.set(false);
 			if (e.reason === 'cleared' && this._currentSessionObs.get()?.chatSessionId === e.sessionId) {
 				void this._currentSessionObs.get()?.stop();
 			}
