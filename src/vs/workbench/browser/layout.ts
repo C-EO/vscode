@@ -707,11 +707,8 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		// Auxiliary Panel to restore
 		if (this.isVisible(Parts.AUXILIARYBAR_PART)) {
-			let viewContainerToRestore = this.storageService.get(AuxiliaryBarPart.activePanelSettingsKey, StorageScope.WORKSPACE, this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.AuxiliaryBar)?.id);
+			const viewContainerToRestore = this.storageService.get(AuxiliaryBarPart.activePanelSettingsKey, StorageScope.WORKSPACE, this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.AuxiliaryBar)?.id);
 			if (viewContainerToRestore) {
-				if (viewContainerToRestore === 'workbench.panel.chatSidebar') {
-					viewContainerToRestore = 'workbench.panel.chat'; // TODO@bpasero remove me after some months
-				}
 				this.state.initialization.views.containerToRestore.auxiliaryBar = viewContainerToRestore;
 			} else {
 				this.stateModel.setRuntimeValue(LayoutStateKeys.AUXILIARYBAR_HIDDEN, true);
@@ -1754,9 +1751,9 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		else if (!hidden && !this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Sidebar)) {
 			const viewletToOpen = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Sidebar);
 			if (viewletToOpen) {
-				const viewlet = this.paneCompositeService.openPaneComposite(viewletToOpen, ViewContainerLocation.Sidebar, true);
+				const viewlet = this.paneCompositeService.openPaneComposite(viewletToOpen, ViewContainerLocation.Sidebar);
 				if (!viewlet) {
-					this.paneCompositeService.openPaneComposite(this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Sidebar)?.id, ViewContainerLocation.Sidebar, true);
+					this.paneCompositeService.openPaneComposite(this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Sidebar)?.id, ViewContainerLocation.Sidebar);
 				}
 			}
 		}
@@ -1895,8 +1892,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			}
 
 			if (panelToOpen) {
-				const focus = !skipLayout;
-				this.paneCompositeService.openPaneComposite(panelToOpen, ViewContainerLocation.Panel, focus);
+				this.paneCompositeService.openPaneComposite(panelToOpen, ViewContainerLocation.Panel);
 			}
 		}
 
@@ -1995,8 +1991,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			}
 
 			if (panelToOpen) {
-				const focus = !skipLayout;
-				this.paneCompositeService.openPaneComposite(panelToOpen, ViewContainerLocation.AuxiliaryBar, focus);
+				this.paneCompositeService.openPaneComposite(panelToOpen, ViewContainerLocation.AuxiliaryBar);
 			}
 		}
 
