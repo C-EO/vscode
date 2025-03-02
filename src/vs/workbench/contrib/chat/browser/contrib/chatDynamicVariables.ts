@@ -394,6 +394,7 @@ export async function createFolderQuickPick(accessor: ServicesAccessor): Promise
 					searchFolders(
 						workspace,
 						value,
+						true,
 						undefined,
 						undefined,
 						configurationService,
@@ -421,6 +422,7 @@ export async function createFolderQuickPick(accessor: ServicesAccessor): Promise
 			type: 'item',
 			id: folder.toString(),
 			resource: folder,
+			alwaysShow: true,
 			label: basename(folder),
 			description: labelService.getUriLabel(dirname(folder), { relative: true }),
 			iconClass: ThemeIcon.asClassName(Codicon.folder),
@@ -451,11 +453,14 @@ export async function getTopLevelFolders(workspaces: URI[], fileService: IFileSe
 export async function searchFolders(
 	workspace: URI,
 	pattern: string,
+	fuzzyMatch: boolean,
 	token: CancellationToken | undefined,
 	cacheKey: string | undefined,
 	configurationService: IConfigurationService,
 	searchService: ISearchService
 ): Promise<URI[]> {
+	const segmentMatchPattern = caseInsensitiveGlobPattern(fuzzyMatch ? fuzzyMatchingGlobPattern(pattern) : continousMatchingGlobPattern(pattern));
+
 	const searchExcludePattern = getExcludes(configurationService.getValue<ISearchConfiguration>({ resource: workspace })) || {};
 	const searchOptions: IFileQuery = {
 		folderQueries: [{
@@ -470,7 +475,7 @@ export async function searchFolders(
 
 	let folderResults: ISearchComplete | undefined;
 	try {
-		folderResults = await searchService.fileSearch({ ...searchOptions, filePattern: `**/*${pattern}*/**` }, token);
+		folderResults = await searchService.fileSearch({ ...searchOptions, filePattern: `**/${segmentMatchPattern}/**` }, token);
 	} catch (e) {
 		if (!isCancellationError(e)) {
 			throw e;
@@ -481,13 +486,40 @@ export async function searchFolders(
 		return [];
 	}
 
-	const folderResources = getMatchingFoldersFromFiles(folderResults.results.map(result => result.resource), workspace, pattern);
+	const folderResources = getMatchingFoldersFromFiles(folderResults.results.map(result => result.resource), workspace, segmentMatchPattern);
 	return folderResources;
+}
+
+function fuzzyMatchingGlobPattern(pattern: string): string {
+	if (!pattern) {
+		return '*';
+	}
+	return '*' + pattern.split('').join('*') + '*';
+}
+
+function continousMatchingGlobPattern(pattern: string): string {
+	if (!pattern) {
+		return '*';
+	}
+	return '*' + pattern + '*';
+}
+
+function caseInsensitiveGlobPattern(pattern: string): string {
+	let caseInsensitiveFilePattern = '';
+	for (let i = 0; i < pattern.length; i++) {
+		const char = pattern[i];
+		if (/[a-zA-Z]/.test(char)) {
+			caseInsensitiveFilePattern += `[${char.toLowerCase()}${char.toUpperCase()}]`;
+		} else {
+			caseInsensitiveFilePattern += char;
+		}
+	}
+	return caseInsensitiveFilePattern;
 }
 
 
 // TODO: remove this and have support from the search service
-function getMatchingFoldersFromFiles(resources: URI[], workspace: URI, pattern: string): URI[] {
+function getMatchingFoldersFromFiles(resources: URI[], workspace: URI, segmentMatchPattern: string): URI[] {
 	const uniqueFolders = new ResourceSet();
 	for (const resource of resources) {
 		const relativePathToRoot = relativePath(workspace, resource);
@@ -507,7 +539,7 @@ function getMatchingFoldersFromFiles(resources: URI[], workspace: URI, pattern: 
 	for (const folderResource of uniqueFolders) {
 		const stats = folderResource.path.split('/');
 		const dirStat = stats[stats.length - 1];
-		if (!dirStat || !glob.match(`*${pattern}*`, dirStat)) {
+		if (!dirStat || !glob.match(segmentMatchPattern, dirStat)) {
 			continue;
 		}
 
@@ -652,7 +684,7 @@ export class AddDynamicVariableAction extends Action2 {
 registerAction2(AddDynamicVariableAction);
 
 export async function createMarkersQuickPick(accessor: ServicesAccessor, level: 'problem' | 'file', onBackgroundAccept?: (item: IDiagnosticVariableEntryFilterData[]) => void): Promise<IDiagnosticVariableEntryFilterData | undefined> {
-	const markers = accessor.get(IMarkerService).read();
+	const markers = accessor.get(IMarkerService).read({ severities: MarkerSeverity.Error | MarkerSeverity.Warning | MarkerSeverity.Info });
 	if (!markers.length) {
 		return;
 	}
@@ -707,16 +739,7 @@ export async function createMarkersQuickPick(accessor: ServicesAccessor, level: 
 		items.unshift({ type: 'separator', label: localize('markers.panel.files', 'Files') });
 	}
 
-	if (severities.has(MarkerSeverity.Error)) {
-		items.unshift({ type: 'item', label: localize('markers.panel.allErrors', 'All Errors'), entry: { filterSeverity: MarkerSeverity.Error } });
-	}
-	if (severities.has(MarkerSeverity.Warning)) {
-		items.unshift({ type: 'item', label: localize('markers.panel.allWarnings', 'All Warnings'), entry: { filterSeverity: MarkerSeverity.Warning } });
-	}
-	if (severities.has(MarkerSeverity.Info)) {
-		items.unshift({ type: 'item', label: localize('markers.panel.allInfos', 'All Infos'), entry: { filterSeverity: MarkerSeverity.Info } });
-	}
-
+	items.unshift({ type: 'item', label: localize('markers.panel.allErrors', 'All Problems'), entry: { filterSeverity: MarkerSeverity.Info } });
 
 	const quickInputService = accessor.get(IQuickInputService);
 	const quickPick = quickInputService.createQuickPick<MarkerPickItem>({ useSeparators: true });
