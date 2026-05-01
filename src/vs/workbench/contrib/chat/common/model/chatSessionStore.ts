@@ -9,13 +9,15 @@ import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { revive } from '../../../../../base/common/marshalling.js';
-import { joinPath } from '../../../../../base/common/resources.js';
+import { isEqual, joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
 import { IUserDataProfilesService } from '../../../../../platform/userDataProfile/common/userDataProfile.js';
@@ -25,9 +27,9 @@ import { ILifecycleService } from '../../../../services/lifecycle/common/lifecyc
 import { IWorkspaceEditingService } from '../../../../services/workspaces/common/workspaceEditing.js';
 import { awaitStatsForSession } from '../chat.js';
 import { IChatSessionStats, IChatSessionTiming, ResponseModelState } from '../chatService/chatService.js';
-import { ChatAgentLocation } from '../constants.js';
+import { ChatAgentLocation, ChatPermissionLevel } from '../constants.js';
 import { ModifiedFileEntryState } from '../editing/chatEditingService.js';
-import { ChatModel, ISerializableChatData, ISerializableChatDataIn, ISerializableChatsData, ISerializedChatDataReference, normalizeSerializableChatData } from './chatModel.js';
+import { ChatModel, ISerializableChatData, ISerializableChatDataIn, ISerializableChatModelInputState, ISerializableChatsData, ISerializedChatDataReference, normalizeSerializableChatData } from './chatModel.js';
 import { ChatSessionOperationLog } from './chatSessionOperationLog.js';
 import { LocalChatSessionUri } from './chatUri.js';
 
@@ -57,6 +59,8 @@ export class ChatSessionStore extends Disposable {
 		@IUserDataProfilesService private readonly userDataProfilesService: IUserDataProfilesService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorkspaceEditingService private readonly workspaceEditingService: IWorkspaceEditingService,
+		@IDialogService private readonly dialogService: IDialogService,
+		@IOpenerService private readonly openerService: IOpenerService,
 	) {
 		super();
 
@@ -111,7 +115,7 @@ export class ChatSessionStore extends Disposable {
 			joinPath(this.environmentService.workspaceStorageHome, newWorkspaceId, 'chatSessions');
 
 		// If the storage roots are identical, there is nothing to migrate
-		if (oldStorageRoot.toString() === newStorageRoot.toString()) {
+		if (isEqual(oldStorageRoot, newStorageRoot)) {
 			this.storageRoot = newStorageRoot;
 			return;
 		}
@@ -339,6 +343,8 @@ export class ChatSessionStore extends Disposable {
 		}
 	}
 
+	private _didReportIssue = false;
+
 	private async writeSession(session: ChatModel | ISerializableChatData): Promise<void> {
 		try {
 			const index = this.internalGetIndex();
@@ -349,10 +355,36 @@ export class ChatSessionStore extends Disposable {
 						session.dataSerializer = new ChatSessionOperationLog();
 					}
 
-					const { op, data } = session.dataSerializer.write(session);
+					let op: 'append' | 'replace';
+					let data: VSBuffer;
+					try {
+						({ op, data } = session.dataSerializer.write(session));
+					} catch (e) {
+						// This is a big of an ugly prompt, but there is _something_ going on with
+						// missing sessions. Unfortunately it's hard to root cause because users would
+						// not notice an error until they reload the window, at which point any error
+						// is gone. Throw a very verbose dialog here so we can get some quality
+						// bug reports, if the issue is indeed in the serialized.
+						// todo@connor4312: remove after a little bit
+						if (!this._didReportIssue) {
+							this._didReportIssue = true;
+							this.dialogService.prompt({
+								custom: true, // so text is copyable
+								title: localize('chatSessionStore.serializationError', 'Error saving chat session'),
+								message: localize('chatSessionStore.writeError', 'Error serializing chat session for storage. The session will be lost if the window is closed. Please report this issue to the VS Code team:\n\n{0}', e.stack || toErrorMessage(e)),
+								buttons: [
+									{ label: localize('reportIssue', 'Report Issue'), run: () => this.openerService.open('https://github.com/microsoft/vscode/issues/new?template=bug_report.md') }
+								]
+							});
+						}
+
+						throw e;
+					}
+
 					if (data.byteLength > 0) {
 						await this.fileService.writeFile(storageLocation.log, data, { append: op === 'append' });
 					}
+					session.dataSerializer.confirmWrite();
 				} else {
 					const content = new ChatSessionOperationLog().createInitialFromSerialized(session);
 					await this.fileService.writeFile(storageLocation.log, content);
@@ -721,6 +753,18 @@ export interface IChatSessionEntryMetadata {
 	 * Whether this session was loaded from an external provider (eg background/cloud sessions).
 	 */
 	isExternal?: boolean;
+
+	/**
+	 * The permission level for tool auto-approval, if not default.
+	 */
+	permissionLevel?: ChatPermissionLevel;
+
+	/**
+	 * Serialized draft input state (text, attachments, mode, selected model, ...) for
+	 * external sessions, so that unsent input is preserved when switching away and
+	 * back. Local sessions instead persist their full state via storeSessions.
+	 */
+	inputState?: ISerializableChatModelInputState;
 }
 
 function isChatSessionEntryMetadata(obj: unknown): obj is IChatSessionEntryMetadata {
@@ -794,6 +838,15 @@ async function getSessionMetadata(session: ChatModel | ISerializableChatData): P
 		lastResponseState = ResponseModelState.Cancelled;
 	}
 
+	const isExternal = session instanceof ChatModel && !LocalChatSessionUri.parseLocalSessionId(session.sessionResource);
+	// Persist draft input state only for external sessions; local sessions already
+	// have their full state serialized via storeSessions, so duplicating here would
+	// be wasteful and risk drift between the two locations.
+	// Attachments are excluded because they can contain large binary payloads
+	// (e.g. base64-encoded images) that would bloat the session index entry.
+	const rawInputState = isExternal ? (session as ChatModel).inputModel.toJSON() : undefined;
+	const inputState = rawInputState ? { ...rawInputState, attachments: [] } : undefined;
+
 	return {
 		sessionId: session.sessionId,
 		title: title || localize('newChat', "New Chat"),
@@ -803,8 +856,10 @@ async function getSessionMetadata(session: ChatModel | ISerializableChatData): P
 		hasPendingEdits: session instanceof ChatModel ? (session.editingSession?.entries.get().some(e => e.state.get() === ModifiedFileEntryState.Modified)) : false,
 		isEmpty: session instanceof ChatModel ? session.getRequests().length === 0 : session.requests.length === 0,
 		stats,
-		isExternal: session instanceof ChatModel && !LocalChatSessionUri.parseLocalSessionId(session.sessionResource),
+		isExternal,
 		lastResponseState,
+		permissionLevel: session instanceof ChatModel ? session.inputModel.state.get()?.permissionLevel : undefined,
+		inputState,
 	};
 }
 

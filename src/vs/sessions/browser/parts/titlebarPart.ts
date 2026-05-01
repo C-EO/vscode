@@ -14,11 +14,9 @@ import { StandardMouseEvent } from '../../../base/browser/mouseEvent.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { DisposableStore } from '../../../base/common/lifecycle.js';
 import { IThemeService } from '../../../platform/theme/common/themeService.js';
-import { WORKBENCH_BACKGROUND } from '../../../workbench/common/theme.js';
-import { chatBarTitleBackground, chatBarTitleForeground } from '../../common/theme.js';
+import { agentsPanelForeground } from '../../common/theme.js';
 import { isMacintosh, isWeb, isNative, platformLocale } from '../../../base/common/platform.js';
-import { Color } from '../../../base/common/color.js';
-import { EventType, EventHelper, Dimension, append, $, addDisposableListener, prepend, getWindow, getWindowId } from '../../../base/browser/dom.js';
+import { EventType, EventHelper, append, $, addDisposableListener, prepend, getWindow, getWindowId, getContentWidth } from '../../../base/browser/dom.js';
 import { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { IStorageService } from '../../../platform/storage/common/storage.js';
@@ -78,8 +76,18 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 	private windowControlsContainer: HTMLElement | undefined;
 
 	private leftContent!: HTMLElement;
+	private leftToolbarContainer!: HTMLElement;
 	private centerContent!: HTMLElement;
 	private rightContent!: HTMLElement;
+
+	get leftContainer(): HTMLElement { return this.leftContent; }
+	get rightContainer(): HTMLElement { return this.rightContent; }
+	get rightWindowControlsContainer(): HTMLElement | undefined { return this.windowControlsContainer; }
+
+	private sideBarPartResizeObserver: ResizeObserver | undefined;
+	private leftToolbarContentWidth: number = 0;
+	private lastSideBarWidth: number = 0;
+	private leftSpacerWidth: number = 0;
 
 	private readonly titleBarStyle: TitlebarStyle;
 	private isInactive: boolean = false;
@@ -132,7 +140,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {
 		this.element = parent;
-		this.rootContainer = append(parent, $('.titlebar-container.has-center'));
+		this.rootContainer = append(parent, $('.titlebar-container.sessions-titlebar-container.has-center'));
 
 		// Draggable region
 		prepend(this.rootContainer, $('div.titlebar-drag-region'));
@@ -156,17 +164,20 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 				// macOS native: traffic lights are rendered by the OS at the top-left corner.
 				// Add a fixed-width spacer to push content past the traffic lights.
 				const spacer = append(this.leftContent, $('div.window-controls-container'));
-				spacer.style.width = '70px';
-				spacer.style.flexShrink = '0';
 
 				// Hide spacer in fullscreen (traffic lights are not shown)
 				const updateSpacerVisibility = () => {
-					spacer.style.display = isFullscreen(mainWindow) ? 'none' : '';
+					const fullscreen = isFullscreen(mainWindow);
+					spacer.style.display = fullscreen ? 'none' : '';
+					this.leftSpacerWidth = fullscreen ? 0 : 70;
 				};
 				updateSpacerVisibility();
+				spacer.style.width = `${this.leftSpacerWidth}px`;
+				spacer.style.flexShrink = '0';
 				this._register(onDidChangeFullscreen(windowId => {
 					if (windowId === getWindowId(mainWindow)) {
 						updateSpacerVisibility();
+						this.updateLeftContentWidth();
 					}
 				}));
 			} else if (getWindowControlsStyle(this.configurationService) === WindowControlsStyle.HIDDEN) {
@@ -184,12 +195,18 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		}
 
 		// Left toolbar (driven by Menus.TitleBarLeft, rendered after window controls via CSS order)
-		const leftToolbarContainer = append(this.leftContent, $('div.left-toolbar-container'));
-		this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, leftToolbarContainer, Menus.TitleBarLeft, {
+		this.leftToolbarContainer = append(this.leftContent, $('div.left-toolbar-container'));
+		const leftToolbar = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, this.leftToolbarContainer, Menus.TitleBarLeftLayout, {
 			contextMenu: Menus.TitleBarContext,
 			telemetrySource: 'titlePart.left',
 			hiddenItemStrategy: HiddenItemStrategy.NoHide,
 			toolbarOptions: { primaryGroup: () => true },
+		}));
+		this.leftToolbarContentWidth = getContentWidth(this.leftToolbarContainer);
+		this.updateLeftContentWidth();
+		this._register(leftToolbar.onDidChangeMenuItems(() => {
+			this.leftToolbarContentWidth = getContentWidth(this.leftToolbarContainer);
+			this.updateLeftContentWidth();
 		}));
 
 		// Center toolbar - command center (renders session picker via IActionViewItemService)
@@ -203,11 +220,21 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 			toolbarOptions: { primaryGroup: () => true },
 		}));
 
-		// Right toolbar (driven by Menus.TitleBarRight - includes account submenu)
-		const rightToolbarContainer = prepend(this.rightContent, $('div.action-toolbar-container'));
-		this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, rightToolbarContainer, Menus.TitleBarRight, {
+		// Right toolbar (driven by Menus.TitleBarRightLayout - includes layout actions)
+		const rightToolbarContainer = prepend(this.rightContent, $('div.titlebar-actions-container.titlebar-right-layout-container'));
+		this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, rightToolbarContainer, Menus.TitleBarRightLayout, {
 			contextMenu: Menus.TitleBarContext,
+			hiddenItemStrategy: HiddenItemStrategy.NoHide,
 			telemetrySource: 'titlePart.right',
+			toolbarOptions: { primaryGroup: () => true },
+		}));
+
+		// Session title actions toolbar (before right toolbar)
+		const sessionActionsContainer = prepend(this.rightContent, $('div.titlebar-actions-container.titlebar-session-actions-container'));
+		this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, sessionActionsContainer, Menus.TitleBarSessionMenu, {
+			contextMenu: Menus.TitleBarContext,
+			hiddenItemStrategy: HiddenItemStrategy.NoHide,
+			telemetrySource: 'titlePart.sessionActions',
 			toolbarOptions: { primaryGroup: () => true },
 		}));
 
@@ -228,18 +255,11 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		if (this.element) {
 			this.element.classList.toggle('inactive', this.isInactive);
 
-			const titleBackground = this.getColor(chatBarTitleBackground, (color, theme) => {
-				return color.isOpaque() ? color : color.makeOpaque(WORKBENCH_BACKGROUND(theme));
-			}) || '';
-			this.element.style.backgroundColor = titleBackground;
+			// Titlebar is transparent — it inherits the sidebar/gradient background via CSS.
+			// Only set foreground color for text/icon contrast.
+			this.element.style.backgroundColor = '';
 
-			if (titleBackground && Color.fromHex(titleBackground).isLighter()) {
-				this.element.classList.add('light');
-			} else {
-				this.element.classList.remove('light');
-			}
-
-			const titleForeground = this.getColor(chatBarTitleForeground);
+			const titleForeground = this.getColor(agentsPanelForeground);
 			this.element.style.color = titleForeground || '';
 		}
 	}
@@ -254,8 +274,6 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		});
 	}
 
-	private lastLayoutDimension: Dimension | undefined;
-
 	get hasZoomableElements(): boolean {
 		return true; // sessions titlebar always has command center and toolbar actions
 	}
@@ -268,9 +286,38 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 	}
 
 	override layout(width: number, height: number): void {
-		this.lastLayoutDimension = new Dimension(width, height);
 		this.updateLayout();
 		super.layoutContents(width, height);
+		this.installSideBarPartResizeObserver();
+	}
+
+	private installSideBarPartResizeObserver(): void {
+		if (this.sideBarPartResizeObserver) {
+			return;
+		}
+
+		const sideBarContainer = this.layoutService.getContainer(getWindow(this.element), Parts.SIDEBAR_PART);
+		if (!sideBarContainer) {
+			return;
+		}
+
+		this.sideBarPartResizeObserver = new ResizeObserver(entries => {
+			this.lastSideBarWidth = entries[0].contentRect.width;
+			this.updateLeftContentWidth();
+		});
+		this.sideBarPartResizeObserver.observe(sideBarContainer);
+		this._register({ dispose: () => this.sideBarPartResizeObserver?.disconnect() });
+	}
+
+	private getLeftContentWidth(): number {
+		if (this.leftToolbarContentWidth === 0) {
+			this.leftToolbarContentWidth = getContentWidth(this.leftToolbarContainer);
+		}
+		return this.leftToolbarContentWidth + this.leftSpacerWidth;
+	}
+
+	private updateLeftContentWidth(): void {
+		this.leftContent.style.width = `${Math.max(this.getLeftContentWidth(), this.lastSideBarWidth)}px`;
 	}
 
 	private updateLayout(): void {
@@ -281,24 +328,6 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		const zoomFactor = getZoomFactor(getWindow(this.element));
 		this.element.style.setProperty('--zoom-factor', zoomFactor.toString());
 		this.rootContainer.classList.toggle('counter-zoom', this.preventZoom);
-
-		this.updateCenterOffset();
-	}
-
-	private updateCenterOffset(): void {
-		if (!this.centerContent || !this.lastLayoutDimension) {
-			return;
-		}
-
-		// Center the command center relative to the viewport.
-		// The titlebar only covers the right section (sidebar is to the left),
-		// so we shift the center content left by half the sidebar width
-		// using a negative margin.
-		const windowWidth = this.layoutService.mainContainerDimension.width;
-		const titlebarWidth = this.lastLayoutDimension.width;
-		const leftOffset = windowWidth - titlebarWidth;
-		this.centerContent.style.marginLeft = leftOffset > 0 ? `${-leftOffset / 2}px` : '';
-		this.centerContent.style.marginRight = leftOffset > 0 ? `${leftOffset / 2}px` : '';
 	}
 
 	focus(): void {

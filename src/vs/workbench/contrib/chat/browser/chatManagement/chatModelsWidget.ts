@@ -64,9 +64,9 @@ export function getModelHoverContent(model: ILanguageModel): MarkdownString {
 		markdown.appendText(`\n`);
 	}
 
-	if (model.metadata.multiplier) {
-		markdown.appendMarkdown(`${localize('models.cost', 'Multiplier')}: `);
-		markdown.appendMarkdown(model.metadata.multiplier);
+	if (model.metadata.pricing) {
+		markdown.appendMarkdown(`${localize('models.pricing', 'Pricing')}: `);
+		markdown.appendMarkdown(model.metadata.pricing);
 		markdown.appendText(`\n`);
 	}
 
@@ -511,14 +511,14 @@ class ModelNameColumnRenderer extends ModelsTableColumnRenderer<IModelNameColumn
 	}
 }
 
-interface IMultiplierColumnTemplateData extends IModelTableColumnTemplateData {
-	readonly multiplierElement: HTMLElement;
+interface IPricingColumnTemplateData extends IModelTableColumnTemplateData {
+	readonly pricingElement: HTMLElement;
 }
 
-class MultiplierColumnRenderer extends ModelsTableColumnRenderer<IMultiplierColumnTemplateData> {
-	static readonly TEMPLATE_ID = 'multiplier';
+class PricingColumnRenderer extends ModelsTableColumnRenderer<IPricingColumnTemplateData> {
+	static readonly TEMPLATE_ID = 'pricing';
 
-	readonly templateId: string = MultiplierColumnRenderer.TEMPLATE_ID;
+	readonly templateId: string = PricingColumnRenderer.TEMPLATE_ID;
 
 	constructor(
 		@IHoverService private readonly hoverService: IHoverService
@@ -526,37 +526,37 @@ class MultiplierColumnRenderer extends ModelsTableColumnRenderer<IMultiplierColu
 		super();
 	}
 
-	renderTemplate(container: HTMLElement): IMultiplierColumnTemplateData {
+	renderTemplate(container: HTMLElement): IPricingColumnTemplateData {
 		const disposables = new DisposableStore();
 		const elementDisposables = new DisposableStore();
-		const multiplierElement = DOM.append(container, $('.model-multiplier'));
+		const pricingElement = DOM.append(container, $('.model-pricing'));
 		return {
 			container,
-			multiplierElement,
+			pricingElement,
 			disposables,
 			elementDisposables
 		};
 	}
 
-	override renderElement(entry: IViewModelEntry, index: number, templateData: IMultiplierColumnTemplateData): void {
-		templateData.multiplierElement.textContent = '';
+	override renderElement(entry: IViewModelEntry, index: number, templateData: IPricingColumnTemplateData): void {
+		templateData.pricingElement.textContent = '';
 		super.renderElement(entry, index, templateData);
 	}
 
-	override renderGroupElement(element: ILanguageModelGroupEntry, index: number, templateData: IMultiplierColumnTemplateData): void {
+	override renderGroupElement(element: ILanguageModelGroupEntry, index: number, templateData: IPricingColumnTemplateData): void {
 	}
 
-	override renderVendorElement(element: ILanguageModelProviderEntry, index: number, templateData: IMultiplierColumnTemplateData): void {
+	override renderVendorElement(element: ILanguageModelProviderEntry, index: number, templateData: IPricingColumnTemplateData): void {
 
 	}
 
-	override renderModelElement(entry: ILanguageModelEntry, index: number, templateData: IMultiplierColumnTemplateData): void {
-		const multiplierText = entry.model.metadata.multiplier ?? '-';
-		templateData.multiplierElement.textContent = multiplierText;
+	override renderModelElement(entry: ILanguageModelEntry, index: number, templateData: IPricingColumnTemplateData): void {
+		const pricingText = entry.model.metadata.pricing ?? '-';
+		templateData.pricingElement.textContent = pricingText;
 
-		if (multiplierText !== '-') {
+		if (pricingText !== '-') {
 			templateData.elementDisposables.add(this.hoverService.setupDelayedHoverAtMouse(templateData.container, () => ({
-				content: localize('multiplier.tooltip', "Every chat message counts {0} towards your premium model request quota", multiplierText),
+				content: localize('pricing.tooltip', "Pricing: {0}", pricingText),
 				appearance: {
 					compact: true,
 					skipFadeInAnimation: true
@@ -772,6 +772,7 @@ class ActionsColumnRenderer extends ModelsTableColumnRenderer<IActionsColumnTemp
 						return;
 					}
 					await this.languageModelsService.removeLanguageModelsProviderGroup(vendorEntry.vendor.vendor, vendorEntry.group.name);
+					this.viewModel.refresh();
 				}
 			}));
 		} else if (vendorEntry.vendor.managementCommand) {
@@ -792,6 +793,21 @@ class ActionsColumnRenderer extends ModelsTableColumnRenderer<IActionsColumnTemp
 	}
 
 	override renderModelElement(entry: ILanguageModelEntry, index: number, templateData: IActionsColumnTemplateData): void {
+		const configActions = this.languageModelsService.getModelConfigurationActions(entry.model.identifier);
+		if (configActions.length === 0 && !entry.model.metadata.configurationSchema) {
+			return;
+		}
+
+		const secondaryActions: IAction[] = [...configActions];
+
+		// Always add "Configure..." as fallback for complex properties
+		secondaryActions.push(toAction({
+			id: 'configureModel',
+			label: localize('models.configureModel', 'Configure...'),
+			run: () => this.languageModelsService.configureModel(entry.model.identifier)
+		}));
+
+		templateData.actionBar.setActions([], secondaryActions);
 	}
 }
 
@@ -845,6 +861,10 @@ export class ChatModelsWidget extends Disposable {
 	private static NUM_INSTANCES: number = 0;
 
 	readonly element: HTMLElement;
+
+	private readonly _onDidChangeItemCount = this._register(new Emitter<number>());
+	readonly onDidChangeItemCount = this._onDidChangeItemCount.event;
+
 	private searchWidget!: SuggestEnabledInput;
 	private searchActionsContainer!: HTMLElement;
 	private table!: WorkbenchTable<IViewModelEntry>;
@@ -867,11 +887,11 @@ export class ChatModelsWidget extends Disposable {
 		@IChatEntitlementService private readonly chatEntitlementService: IChatEntitlementService,
 		@IEditorProgressService private readonly editorProgressService: IEditorProgressService,
 		@ICommandService private readonly commandService: ICommandService,
-		@IContextKeyService contextKeyService: IContextKeyService,
+		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 	) {
 		super();
 
-		this.searchFocusContextKey = CONTEXT_MODELS_SEARCH_FOCUS.bindTo(contextKeyService);
+		this.searchFocusContextKey = CONTEXT_MODELS_SEARCH_FOCUS.bindTo(this.contextKeyService);
 		this.delayedFiltering = this._register(new Delayer<void>(200));
 		this.viewModel = this._register(this.instantiationService.createInstance(ChatModelsViewModel));
 		this.element = DOM.$('.models-widget');
@@ -997,6 +1017,11 @@ export class ChatModelsWidget extends Disposable {
 		this._register(this.viewModel.onDidChangeGrouping(() => this.createTable()));
 		this._register(this.chatEntitlementService.onDidChangeEntitlement(() => this.updateAddModelsButton()));
 		this._register(this.languageModelsService.onDidChangeLanguageModelVendors(() => this.updateAddModelsButton()));
+		this._register(this.contextKeyService.onDidChangeContext(e => {
+			if (e.affectsSome(new Set(['github.copilot.clientByokEnabled']))) {
+				this.updateAddModelsButton();
+			}
+		}));
 	}
 
 	private createTable(): void {
@@ -1005,7 +1030,7 @@ export class ChatModelsWidget extends Disposable {
 
 		const gutterColumnRenderer = this.instantiationService.createInstance(GutterColumnRenderer, this.viewModel);
 		const modelNameColumnRenderer = this.instantiationService.createInstance(ModelNameColumnRenderer);
-		const costColumnRenderer = this.instantiationService.createInstance(MultiplierColumnRenderer);
+		const costColumnRenderer = this.instantiationService.createInstance(PricingColumnRenderer);
 		const tokenLimitsColumnRenderer = this.instantiationService.createInstance(TokenLimitsColumnRenderer);
 		const capabilitiesColumnRenderer = this.instantiationService.createInstance(CapabilitiesColumnRenderer);
 		const actionsColumnRenderer = this.instantiationService.createInstance(ActionsColumnRenderer, this.viewModel);
@@ -1062,17 +1087,17 @@ export class ChatModelsWidget extends Disposable {
 			{
 				label: localize('capabilities', 'Capabilities'),
 				tooltip: '',
-				weight: 0.2,
+				weight: 0.15,
 				minimumWidth: 180,
 				templateId: CapabilitiesColumnRenderer.TEMPLATE_ID,
 				project(row: IViewModelEntry): IViewModelEntry { return row; }
 			},
 			{
-				label: localize('cost', 'Request Multiplier'),
+				label: localize('cost', 'Pricing'),
 				tooltip: '',
-				weight: 0.1,
-				minimumWidth: 60,
-				templateId: MultiplierColumnRenderer.TEMPLATE_ID,
+				weight: 0.15,
+				minimumWidth: 200,
+				templateId: PricingColumnRenderer.TEMPLATE_ID,
 				project(row: IViewModelEntry): IViewModelEntry { return row; }
 			},
 			{
@@ -1122,9 +1147,9 @@ export class ChatModelsWidget extends Disposable {
 						if (e.model.metadata.capabilities) {
 							ariaLabels.push(localize('model.capabilities', 'Capabilities: {0}', Object.keys(e.model.metadata.capabilities).join(', ')));
 						}
-						const multiplierText = e.model.metadata.multiplier ?? '-';
-						if (multiplierText !== '-') {
-							ariaLabels.push(localize('multiplier.tooltip', "Every chat message counts {0} towards your premium model request quota", multiplierText));
+						const pricingText = e.model.metadata.pricing ?? '-';
+						if (pricingText !== '-') {
+							ariaLabels.push(localize('pricing.ariaLabel', "Pricing: {0}", pricingText));
 						}
 						if (e.model.visible) {
 							ariaLabels.push(localize('model.visible', 'This model is visible in the chat model picker'));
@@ -1176,6 +1201,15 @@ export class ChatModelsWidget extends Disposable {
 					enabled: hiddenModels.length > 0,
 					run: () => this.viewModel.setModelsVisibility(selectedModelEntries, true)
 				}));
+
+				// Show per-model configuration actions for a single model
+				if (selectedModelEntries.length === 1) {
+					const configActions = this.languageModelsService.getModelConfigurationActions(selectedModelEntries[0].model.identifier);
+					if (configActions.length) {
+						actions.push(new Separator());
+						actions.push(...configActions);
+					}
+				}
 
 				// Show configure action if all models are from the same group
 				configureGroup = selectedModelEntries[0].model.provider.group.name;
@@ -1237,8 +1271,10 @@ export class ChatModelsWidget extends Disposable {
 		}));
 
 		this.table.splice(0, this.table.length, this.viewModel.viewModelEntries);
+		this._onDidChangeItemCount.fire(this.itemCount);
 		this.tableDisposables.add(this.viewModel.onDidChange(({ at, removed, added }) => {
 			this.table.splice(at, removed, added);
+			this._onDidChangeItemCount.fire(this.itemCount);
 			if (this.viewModel.selectedEntry) {
 				const selectedEntryIndex = this.viewModel.viewModelEntries.indexOf(this.viewModel.selectedEntry);
 				this.table.setFocus([selectedEntryIndex]);
@@ -1277,6 +1313,7 @@ export class ChatModelsWidget extends Disposable {
 		const entitlement = this.chatEntitlementService.entitlement;
 		const isManagedEntitlement = entitlement === ChatEntitlement.Business || entitlement === ChatEntitlement.Enterprise;
 		const supportsAddingModels = this.chatEntitlementService.isInternal
+			|| (isManagedEntitlement && this.chatEntitlementService.clientByokEnabled)
 			|| (entitlement !== ChatEntitlement.Unknown
 				&& entitlement !== ChatEntitlement.Available
 				&& !isManagedEntitlement);
@@ -1300,7 +1337,8 @@ export class ChatModelsWidget extends Disposable {
 	}
 
 	private async addModelsForVendor(vendor: ILanguageModelProviderDescriptor): Promise<void> {
-		this.languageModelsService.configureLanguageModelsProviderGroup(vendor.vendor);
+		await this.languageModelsService.configureLanguageModelsProviderGroup(vendor.vendor);
+		await this.viewModel.refresh();
 	}
 
 	public layout(height: number, width: number): void {
@@ -1330,6 +1368,23 @@ export class ChatModelsWidget extends Disposable {
 		if (this.viewModel.shouldRefilter()) {
 			this.viewModel.filter(this.searchWidget.getValue());
 		}
+	}
+
+	/**
+	 * Gets the total model count (excluding vendor/group/status headers).
+	 */
+	get itemCount(): number {
+		return this.viewModel.viewModelEntries
+			.filter(e => !isLanguageModelProviderEntry(e) && !isLanguageModelGroupEntry(e) && !isStatusEntry(e))
+			.length;
+	}
+
+	/**
+	 * Re-fires the current item count. Call after subscribing to onDidChangeItemCount
+	 * to ensure the subscriber receives the latest count.
+	 */
+	fireItemCount(): void {
+		this._onDidChangeItemCount.fire(this.itemCount);
 	}
 
 }
